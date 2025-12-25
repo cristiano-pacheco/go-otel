@@ -32,8 +32,8 @@ func main() {
 
 	trace.MustInitialize(config)
 	defer func() {
-		if err := trace.Shutdown(context.Background()); err != nil {
-			log.Printf("Error shutting down tracer: %v", err)
+		if shutdownErr := trace.Shutdown(context.Background()); shutdownErr != nil {
+			log.Printf("Error shutting down tracer: %v", shutdownErr)
 		}
 	}()
 
