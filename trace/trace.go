@@ -2,24 +2,18 @@ package trace
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.38.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
-)
-
-const (
-	defaultBatchTimeout = 5 * time.Second
-	defaultSampleRate   = 0.01
 )
 
 var (
@@ -37,7 +31,7 @@ func Initialize(config TracerConfig) error {
 	defer globalMutex.Unlock()
 
 	if initialized {
-		return errors.New("tracer already initialized")
+		return ErrAlreadyInitialized
 	}
 
 	if err := config.Validate(); err != nil {
@@ -50,7 +44,7 @@ func Initialize(config TracerConfig) error {
 
 	tp, exp, err := newTracerProvider(config, res)
 	if err != nil {
-		return fmt.Errorf("failed to create tracer provider: %w", err)
+		return fmt.Errorf("%w: %w", ErrCreateTracerProvider, err)
 	}
 
 	setupGlobalTracing(tp)
@@ -108,7 +102,7 @@ func newTracerProvider(
 
 	exp, err := newExporter(config)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create exporter: %w", err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrCreateExporter, err)
 	}
 
 	// Configure batch span processor options
@@ -132,11 +126,42 @@ func newTracerProvider(
 	return tp, exp, nil
 }
 
-// newExporter creates a new OTLP HTTP exporter
+// newExporter creates a new OTLP exporter (gRPC or HTTP based on config)
 func newExporter(config TracerConfig) (sdktrace.SpanExporter, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultBatchTimeout)
 	defer cancel()
 
+	if config.ExporterType.IsGRPC() {
+		return newGRPCExporter(ctx, config)
+	}
+
+	if config.ExporterType.IsHTTP() {
+		return newHTTPExporter(ctx, config)
+	}
+
+	return nil, fmt.Errorf("%w: %s", ErrInvalidExporterType, config.ExporterType.String())
+}
+
+// newGRPCExporter creates a new OTLP gRPC exporter
+func newGRPCExporter(ctx context.Context, config TracerConfig) (sdktrace.SpanExporter, error) {
+	options := []otlptracegrpc.Option{
+		otlptracegrpc.WithEndpoint(config.TraceURL),
+	}
+
+	if config.Insecure {
+		options = append(options, otlptracegrpc.WithInsecure())
+	}
+
+	exporter, err := otlptracegrpc.New(ctx, options...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrCreateGRPCExporter, err)
+	}
+
+	return exporter, nil
+}
+
+// newHTTPExporter creates a new OTLP HTTP exporter
+func newHTTPExporter(ctx context.Context, config TracerConfig) (sdktrace.SpanExporter, error) {
 	options := []otlptracehttp.Option{
 		otlptracehttp.WithEndpoint(config.TraceURL),
 	}
@@ -147,7 +172,7 @@ func newExporter(config TracerConfig) (sdktrace.SpanExporter, error) {
 
 	exporter, err := otlptracehttp.New(ctx, options...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OTLP HTTP exporter: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateHTTPExporter, err)
 	}
 
 	return exporter, nil
@@ -193,7 +218,7 @@ func Shutdown(ctx context.Context) error {
 	defer globalMutex.Unlock()
 
 	if !initialized {
-		return errors.New("tracer not initialized")
+		return ErrNotInitialized
 	}
 
 	logger := slog.Default()
@@ -202,7 +227,7 @@ func Shutdown(ctx context.Context) error {
 	if globalTracerProvider != nil {
 		if err := globalTracerProvider.Shutdown(ctx); err != nil {
 			logger.ErrorContext(ctx, "Failed to shutdown tracer provider", "error", err)
-			shutdownErr = fmt.Errorf("tracer provider shutdown failed: %w", err)
+			shutdownErr = fmt.Errorf("%w: %w", ErrTracerProviderShutdown, err)
 		} else {
 			logger.InfoContext(ctx, "Tracer provider shutdown successfully...")
 		}
@@ -212,9 +237,9 @@ func Shutdown(ctx context.Context) error {
 		if err := globalExporter.Shutdown(ctx); err != nil {
 			logger.ErrorContext(ctx, "Failed to shutdown exporter", "error", err)
 			if shutdownErr != nil {
-				return fmt.Errorf("multiple shutdown failures - tracer: %w, exporter: %w", shutdownErr, err)
+				return fmt.Errorf("%w - tracer: %w, exporter: %w", ErrMultipleShutdown, shutdownErr, err)
 			}
-			return fmt.Errorf("exporter shutdown failed: %w", err)
+			return fmt.Errorf("%w: %w", ErrExporterShutdown, err)
 		}
 		logger.InfoContext(ctx, "Exporter shutdown successfully...")
 	}

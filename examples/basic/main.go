@@ -16,6 +16,10 @@ const (
 
 func main() {
 	// Initialize tracer
+	exporterType, err := trace.NewExporterType(trace.ExporterTypeGRPC) // or trace.ExporterTypeHTTP
+	if err != nil {
+		log.Fatalf("Invalid exporter type: %v", err)
+	}
 	config := trace.TracerConfig{
 		AppName:      "example-app",
 		AppVersion:   "1.0.0",
@@ -23,6 +27,7 @@ func main() {
 		TraceEnabled: false, // Set to true to send traces
 		Insecure:     true,
 		SampleRate:   1.0,
+		ExporterType: exporterType,
 	}
 
 	trace.MustInitialize(config)

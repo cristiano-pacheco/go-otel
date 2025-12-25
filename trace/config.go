@@ -1,8 +1,12 @@
 package trace
 
 import (
-	"errors"
 	"time"
+)
+
+const (
+	defaultBatchTimeout = 5 * time.Second
+	defaultSampleRate   = 0.01
 )
 
 type TracerConfig struct {
@@ -14,19 +18,20 @@ type TracerConfig struct {
 	BatchTimeout time.Duration
 	MaxBatchSize int
 	Insecure     bool
-	SampleRate   float64 // 0.0 to 1.0
+	SampleRate   float64      // 0.0 to 1.0
+	ExporterType ExporterType // GRPC or HTTP, default GRPC
 }
 
 // Validate checks if the configuration is valid
 func (c *TracerConfig) Validate() error {
 	if c.AppName == "" {
-		return errors.New("AppName is required")
+		return ErrAppNameRequired
 	}
 	if c.TraceEnabled && c.TraceURL == "" {
-		return errors.New("TraceURL is required when tracing is enabled")
+		return ErrTraceURLRequired
 	}
 	if c.SampleRate < 0.0 || c.SampleRate > 1.0 {
-		return errors.New("SampleRate must be between 0.0 and 1.0")
+		return ErrInvalidSampleRate
 	}
 	return nil
 }
@@ -40,6 +45,12 @@ func (c *TracerConfig) setDefaults() {
 		c.MaxBatchSize = 512
 	}
 	if c.SampleRate == 0.0 {
-		c.SampleRate = 1.0 // Default to sampling all traces
+		c.SampleRate = defaultSampleRate
+	}
+	if c.ExporterType.IsZero() {
+		exporterType, err := NewExporterType(ExporterTypeGRPC)
+		if err == nil {
+			c.ExporterType = exporterType
+		}
 	}
 }
