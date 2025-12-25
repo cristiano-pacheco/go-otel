@@ -9,6 +9,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+const (
+	simulatedFetchDuration = 50 * time.Millisecond
+	simulatedSaveDuration  = 30 * time.Millisecond
+)
+
 func main() {
 	// Initialize tracer
 	config := trace.TracerConfig{
@@ -21,7 +26,11 @@ func main() {
 	}
 
 	trace.MustInitialize(config)
-	defer trace.Shutdown(context.Background())
+	defer func() {
+		if err := trace.Shutdown(context.Background()); err != nil {
+			log.Printf("Error shutting down tracer: %v", err)
+		}
+	}()
 
 	log.Println("Tracer initialized")
 
@@ -46,18 +55,18 @@ func processOrder(ctx context.Context, orderID string) {
 }
 
 func fetchData(ctx context.Context) {
-	ctx, span := trace.StartSpan(ctx, "fetch-data")
+	_, span := trace.StartSpan(ctx, "fetch-data")
 	defer span.End()
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(simulatedFetchDuration)
 	log.Println("Data fetched")
 }
 
 func saveData(ctx context.Context) {
-	ctx, span := trace.StartSpan(ctx, "save-data")
+	_, span := trace.StartSpan(ctx, "save-data")
 	defer span.End()
 
 	span.SetAttributes(attribute.String("db.system", "postgres"))
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(simulatedSaveDuration)
 	log.Println("Data saved")
 }

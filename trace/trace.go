@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -36,7 +37,7 @@ func Initialize(config TracerConfig) error {
 	defer globalMutex.Unlock()
 
 	if initialized {
-		return fmt.Errorf("tracer already initialized")
+		return errors.New("tracer already initialized")
 	}
 
 	if err := config.Validate(); err != nil {
@@ -45,10 +46,7 @@ func Initialize(config TracerConfig) error {
 
 	config.setDefaults()
 
-	res, err := createResource(config)
-	if err != nil {
-		return fmt.Errorf("failed to create resource: %w", err)
-	}
+	res := createResource(config)
 
 	tp, exp, err := newTracerProvider(config, res)
 	if err != nil {
@@ -73,12 +71,12 @@ func MustInitialize(config TracerConfig) {
 }
 
 // createResource creates and configures the OpenTelemetry resource
-func createResource(config TracerConfig) (*resource.Resource, error) {
+func createResource(config TracerConfig) *resource.Resource {
 	return resource.NewWithAttributes(
 		semconv.SchemaURL,
 		semconv.ServiceName(config.AppName),
 		semconv.ServiceVersion(config.AppVersion),
-	), nil
+	)
 }
 
 // setupGlobalTracing configures global OpenTelemetry settings
@@ -161,7 +159,7 @@ func StartSpan(ctx context.Context, name string) (context.Context, oteltrace.Spa
 	globalMutex.RLock()
 	defer globalMutex.RUnlock()
 
-	if !initialized {
+	if !initialized || globalTracer == nil {
 		// Return a no-op span if not initialized
 		return ctx, oteltrace.SpanFromContext(ctx)
 	}
@@ -171,11 +169,15 @@ func StartSpan(ctx context.Context, name string) (context.Context, oteltrace.Spa
 }
 
 // StartSpanWithOptions starts a new span with custom options.
-func StartSpanWithOptions(ctx context.Context, name string, opts ...oteltrace.SpanStartOption) (context.Context, oteltrace.Span) {
+func StartSpanWithOptions(
+	ctx context.Context,
+	name string,
+	opts ...oteltrace.SpanStartOption,
+) (context.Context, oteltrace.Span) {
 	globalMutex.RLock()
 	defer globalMutex.RUnlock()
 
-	if !initialized {
+	if !initialized || globalTracer == nil {
 		// Return a no-op span if not initialized
 		return ctx, oteltrace.SpanFromContext(ctx)
 	}
@@ -191,7 +193,7 @@ func Shutdown(ctx context.Context) error {
 	defer globalMutex.Unlock()
 
 	if !initialized {
-		return fmt.Errorf("tracer not initialized")
+		return errors.New("tracer not initialized")
 	}
 
 	logger := slog.Default()
@@ -199,22 +201,22 @@ func Shutdown(ctx context.Context) error {
 
 	if globalTracerProvider != nil {
 		if err := globalTracerProvider.Shutdown(ctx); err != nil {
-			logger.Error("Failed to shutdown tracer provider", "error", err)
+			logger.ErrorContext(ctx, "Failed to shutdown tracer provider", "error", err)
 			shutdownErr = fmt.Errorf("tracer provider shutdown failed: %w", err)
 		} else {
-			logger.Info("Tracer provider shutdown successfully...")
+			logger.InfoContext(ctx, "Tracer provider shutdown successfully...")
 		}
 	}
 
 	if globalExporter != nil {
 		if err := globalExporter.Shutdown(ctx); err != nil {
-			logger.Error("Failed to shutdown exporter", "error", err)
+			logger.ErrorContext(ctx, "Failed to shutdown exporter", "error", err)
 			if shutdownErr != nil {
 				return fmt.Errorf("multiple shutdown failures - tracer: %w, exporter: %w", shutdownErr, err)
 			}
 			return fmt.Errorf("exporter shutdown failed: %w", err)
 		}
-		logger.Info("Exporter shutdown successfully...")
+		logger.InfoContext(ctx, "Exporter shutdown successfully...")
 	}
 
 	// Reset global state
