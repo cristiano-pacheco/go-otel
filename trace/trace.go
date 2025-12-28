@@ -178,23 +178,8 @@ func newHTTPExporter(ctx context.Context, config TracerConfig) (sdktrace.SpanExp
 	return exporter, nil
 }
 
-// StartSpan starts a new span with the given name.
-// The tracer must be initialized first by calling Initialize or MustInitialize.
-func StartSpan(ctx context.Context, name string) (context.Context, oteltrace.Span) {
-	globalMutex.RLock()
-	defer globalMutex.RUnlock()
-
-	if !initialized || globalTracer == nil {
-		// Return a no-op span if not initialized
-		return ctx, oteltrace.SpanFromContext(ctx)
-	}
-
-	//nolint:spancheck // span is returned to caller who is responsible for ending it
-	return globalTracer.Start(ctx, name)
-}
-
-// StartSpanWithOptions starts a new span with custom options.
-func StartSpanWithOptions(
+// Span starts a new span with the given name and options.
+func Span(
 	ctx context.Context,
 	name string,
 	opts ...oteltrace.SpanStartOption,

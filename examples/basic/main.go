@@ -47,7 +47,7 @@ func main() {
 }
 
 func processOrder(ctx context.Context, orderID string) {
-	ctx, span := trace.StartSpan(ctx, "process-order")
+	ctx, span := trace.Span(ctx, "process-order")
 	defer span.End()
 
 	span.SetAttributes(attribute.String("order.id", orderID))
@@ -60,7 +60,7 @@ func processOrder(ctx context.Context, orderID string) {
 }
 
 func fetchData(ctx context.Context) {
-	_, span := trace.StartSpan(ctx, "fetch-data")
+	_, span := trace.Span(ctx, "fetch-data")
 	defer span.End()
 
 	time.Sleep(simulatedFetchDuration)
@@ -68,7 +68,7 @@ func fetchData(ctx context.Context) {
 }
 
 func saveData(ctx context.Context) {
-	_, span := trace.StartSpan(ctx, "save-data")
+	_, span := trace.Span(ctx, "save-data")
 	defer span.End()
 
 	span.SetAttributes(attribute.String("db.system", "postgres"))
