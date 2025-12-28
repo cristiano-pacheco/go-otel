@@ -13,7 +13,7 @@ Package for distributed tracing using OpenTelemetry, with a global function-base
 ## Installation
 
 ```bash
-go get github.com/cristiano-pacheco/go-otel
+go get github.com/cristiano-pacheco/go-otel@latest
 ```
 
 ## Basic Usage
@@ -59,7 +59,7 @@ func main() {
 ```go
 func ProcessOrder(ctx context.Context, orderID string) error {
     // No need to inject tracer!
-    ctx, span := trace.StartSpan(ctx, "process-order")
+    ctx, span := trace.Span(ctx, "process-order")
     defer span.End()
 
     // Add attributes
@@ -78,7 +78,7 @@ func ProcessOrder(ctx context.Context, orderID string) error {
 
 func validateOrder(ctx context.Context, orderID string) error {
     // Nested span automatically
-    ctx, span := trace.StartSpan(ctx, "validate-order")
+    ctx, span := trace.Span(ctx, "validate-order")
     defer span.End()
 
     // Your logic...
@@ -92,7 +92,7 @@ func validateOrder(ctx context.Context, orderID string) error {
 import oteltrace "go.opentelemetry.io/otel/trace"
 
 func QueryDatabase(ctx context.Context, query string) error {
-    ctx, span := trace.StartSpanWithOptions(
+    ctx, span := trace.Span(
         ctx,
         "db-query",
         oteltrace.WithSpanKind(oteltrace.SpanKindClient),
@@ -119,7 +119,8 @@ type TracerConfig struct {
     BatchTimeout time.Duration // Batch send timeout (default: 5s)
     MaxBatchSize int           // Maximum batch size (default: 512)
     Insecure     bool          // Use insecure connection (HTTP)
-    SampleRate   float64       // Sample rate 0.0 to 1.0 (default: 1.0)
+    SampleRate   float64       // Sample rate 0.0 to 1.0 (default: 0.01)
+    ExporterType ExporterType  // GRPC or HTTP, default GRPC
 }
 ```
 
@@ -160,11 +161,8 @@ Initializes the global tracer. Returns an error if configuration is invalid or i
 #### `MustInitialize(config TracerConfig)`
 Version that panics if initialization fails.
 
-#### `StartSpan(ctx context.Context, name string) (context.Context, oteltrace.Span)`
-Starts a new span. Returns updated context and span.
-
-#### `StartSpanWithOptions(ctx context.Context, name string, opts ...oteltrace.SpanStartOption) (context.Context, oteltrace.Span)`
-Starts span with custom options (span kind, initial attributes, etc).
+#### `Span(ctx context.Context, name string, opts ...oteltrace.SpanStartOption) (context.Context, oteltrace.Span)`
+Starts a new span with optional configuration. Returns updated context and span. This unified method replaces both `StartSpan` and `StartSpanWithOptions`.
 
 #### `Shutdown(ctx context.Context) error`
 Safely shuts down the tracer, finishing sending pending spans.
@@ -178,7 +176,7 @@ Checks if the tracer has been initialized.
 
 ```go
 // 1. Always use defer to ensure span is finished
-ctx, span := trace.StartSpan(ctx, "operation")
+ctx, span := trace.Span(ctx, "operation")
 defer span.End()
 
 // 2. Pass context to called functions
