@@ -5,6 +5,7 @@ import "errors"
 var (
 	ErrAppNameRequired     = errors.New("AppName is required")
 	ErrTraceURLRequired    = errors.New("TraceURL is required when tracing is enabled")
+	ErrInvalidLimits       = errors.New("tracing limits must be positive and batch size must not exceed queue size")
 	ErrInvalidSampleRate   = errors.New("SampleRate must be between 0.0 and 1.0")
 	ErrInvalidExporterType = errors.New("invalid exporter type (must be 'grpc' or 'http')")
 

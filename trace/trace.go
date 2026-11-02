@@ -3,8 +3,8 @@ package trace
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -14,18 +14,24 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 //nolint:gochecknoglobals // The package exposes a process-wide tracing API.
 var (
 	globalTracer         oteltrace.Tracer
 	globalTracerProvider *sdktrace.TracerProvider
-	globalExporter       sdktrace.SpanExporter
+	globalShutdown       *shutdownState
 	globalMutex          sync.RWMutex
 	initialized          bool
 )
 
-// Initialize configures the global tracer. Must be called before using StartSpan.
+type shutdownState struct {
+	done chan struct{}
+	err  error
+}
+
+// Initialize configures the global tracer.
 // Returns an error if initialization fails.
 func Initialize(config TracerConfig) error {
 	globalMutex.Lock()
@@ -43,7 +49,7 @@ func Initialize(config TracerConfig) error {
 
 	res := createResource(config)
 
-	tp, exp, err := newTracerProvider(config, res)
+	tp, err := newTracerProvider(config, res)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrCreateTracerProvider, err)
 	}
@@ -52,7 +58,7 @@ func Initialize(config TracerConfig) error {
 
 	globalTracer = tp.Tracer(config.AppName)
 	globalTracerProvider = tp
-	globalExporter = exp
+	globalShutdown = nil
 	initialized = true
 
 	return nil
@@ -92,7 +98,7 @@ func newPropagator() propagation.TextMapPropagator {
 func newTracerProvider(
 	config TracerConfig,
 	res *resource.Resource,
-) (*sdktrace.TracerProvider, sdktrace.SpanExporter, error) {
+) (*sdktrace.TracerProvider, error) {
 	if !config.TraceEnabled {
 		options := []sdktrace.TracerProviderOption{
 			sdktrace.WithResource(res),
@@ -102,24 +108,35 @@ func newTracerProvider(
 			options = append(options, sdktrace.WithIDGenerator(config.IDGenerator))
 		}
 
-		return sdktrace.NewTracerProvider(options...), nil, nil
+		return sdktrace.NewTracerProvider(options...), nil
 	}
 
 	exp, err := newExporter(config)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %w", ErrCreateExporter, err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateExporter, err)
 	}
+
+	exportCtx, exportCancel := context.WithCancel(context.Background())
+	boundedExporter := &lifecycleExporter{SpanExporter: exp, ctx: exportCtx}
 
 	// Configure batch span processor options
 	batchOptions := []sdktrace.BatchSpanProcessorOption{
 		sdktrace.WithBatchTimeout(config.BatchTimeout),
 		sdktrace.WithMaxExportBatchSize(config.MaxBatchSize),
+		sdktrace.WithMaxQueueSize(config.MaxQueueSize),
+		sdktrace.WithExportTimeout(config.ExportTimeout),
 	}
 
 	sampler := sdktrace.ParentBased(sdktrace.TraceIDRatioBased(config.SampleRate))
 
+	processor := &lifecycleProcessor{
+		SpanProcessor: sdktrace.NewBatchSpanProcessor(boundedExporter, batchOptions...),
+		timeout:       config.ShutdownTimeout,
+		exportCancel:  exportCancel,
+	}
+
 	options := []sdktrace.TracerProviderOption{
-		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(exp, batchOptions...)),
+		sdktrace.WithSpanProcessor(processor),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sampler),
 	}
@@ -129,12 +146,48 @@ func newTracerProvider(
 
 	tp := sdktrace.NewTracerProvider(options...)
 
-	return tp, exp, nil
+	return tp, nil
+}
+
+type lifecycleProcessor struct {
+	sdktrace.SpanProcessor
+
+	timeout      time.Duration
+	exportCancel context.CancelFunc
+}
+
+func (p *lifecycleProcessor) Shutdown(_ context.Context) error {
+	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
+	defer cancel()
+	defer p.exportCancel()
+
+	return p.SpanProcessor.Shutdown(ctx)
+}
+
+// lifecycleExporter cancels SDK drain exports when the shutdown budget expires.
+type lifecycleExporter struct {
+	sdktrace.SpanExporter
+
+	ctx context.Context
+}
+
+func (e *lifecycleExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	if err := e.ctx.Err(); err != nil {
+		return err
+	}
+
+	exportCtx, cancel := context.WithCancel(ctx)
+
+	stop := context.AfterFunc(e.ctx, cancel)
+	defer stop()
+	defer cancel()
+
+	return e.SpanExporter.ExportSpans(exportCtx, spans)
 }
 
 // newExporter creates a new OTLP exporter (gRPC or HTTP based on config).
 func newExporter(config TracerConfig) (sdktrace.SpanExporter, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultBatchTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), config.ExportTimeout)
 	defer cancel()
 
 	if config.ExporterType.IsGRPC() {
@@ -152,6 +205,7 @@ func newExporter(config TracerConfig) (sdktrace.SpanExporter, error) {
 func newGRPCExporter(ctx context.Context, config TracerConfig) (sdktrace.SpanExporter, error) {
 	options := []otlptracegrpc.Option{
 		otlptracegrpc.WithEndpoint(config.TraceURL),
+		otlptracegrpc.WithTimeout(config.ExportTimeout),
 	}
 
 	if config.Insecure {
@@ -170,6 +224,7 @@ func newGRPCExporter(ctx context.Context, config TracerConfig) (sdktrace.SpanExp
 func newHTTPExporter(ctx context.Context, config TracerConfig) (sdktrace.SpanExporter, error) {
 	options := []otlptracehttp.Option{
 		otlptracehttp.WithEndpoint(config.TraceURL),
+		otlptracehttp.WithTimeout(config.ExportTimeout),
 	}
 
 	if config.Insecure {
@@ -184,7 +239,12 @@ func newHTTPExporter(ctx context.Context, config TracerConfig) (sdktrace.SpanExp
 	return exporter, nil
 }
 
-// Span starts a new span with the given name and options.
+// Span starts a new span with the given name and options. Before initialization,
+// it returns the original context and a no-op span that can be ended safely.
+// When tracing is disabled, it creates a non-recording child span. In either
+// case, ending the returned span does not end an existing parent span.
+//
+//nolint:spancheck // The caller owns the returned span.
 func Span(
 	ctx context.Context,
 	name string,
@@ -194,58 +254,61 @@ func Span(
 	defer globalMutex.RUnlock()
 
 	if !initialized || globalTracer == nil {
-		// Return a no-op span if not initialized
-		return ctx, oteltrace.SpanFromContext(ctx)
+		_, span := noop.NewTracerProvider().Tracer("").Start(ctx, name, opts...)
+		return ctx, span
 	}
 
 	//nolint:spancheck // span is returned to caller who is responsible for ending it
 	return globalTracer.Start(ctx, name, opts...)
 }
 
-// Shutdown gracefully shuts down the tracer provider and exporter.
-// Should be called during application shutdown.
+// Shutdown flushes and shuts down the provider within the configured budget
+// and the caller's deadline. Repeated calls after shutdown are safe.
 func Shutdown(ctx context.Context) error {
 	globalMutex.Lock()
-	defer globalMutex.Unlock()
-
 	if !initialized {
-		return ErrNotInitialized
-	}
+		shutdown := globalShutdown
+		globalMutex.Unlock()
 
-	logger := slog.Default()
-
-	var shutdownErr error
-
-	if globalTracerProvider != nil {
-		if err := globalTracerProvider.Shutdown(ctx); err != nil {
-			logger.ErrorContext(ctx, "Failed to shutdown tracer provider", "error", err)
-			shutdownErr = fmt.Errorf("%w: %w", ErrTracerProviderShutdown, err)
-		} else {
-			logger.InfoContext(ctx, "Tracer provider shutdown successfully...")
-		}
-	}
-
-	if globalExporter != nil {
-		if err := globalExporter.Shutdown(ctx); err != nil {
-			logger.ErrorContext(ctx, "Failed to shutdown exporter", "error", err)
-
-			if shutdownErr != nil {
-				return fmt.Errorf("%w - tracer: %w, exporter: %w", ErrMultipleShutdown, shutdownErr, err)
-			}
-
-			return fmt.Errorf("%w: %w", ErrExporterShutdown, err)
+		if shutdown == nil {
+			return nil
 		}
 
-		logger.InfoContext(ctx, "Exporter shutdown successfully...")
+		return waitForShutdown(ctx, shutdown)
 	}
 
-	// Reset global state
+	shutdown := &shutdownState{done: make(chan struct{})}
+	globalShutdown = shutdown
+	provider := globalTracerProvider
 	globalTracer = nil
 	globalTracerProvider = nil
-	globalExporter = nil
 	initialized = false
 
-	return shutdownErr
+	otel.SetTracerProvider(noop.NewTracerProvider())
+	globalMutex.Unlock()
+
+	// The SDK skips processor cleanup if Shutdown starts with a canceled context.
+	// Give cleanup its own budget even when the caller has already timed out.
+	//nolint:gosec // Cleanup must run even if the caller's context is already canceled.
+	go func() {
+		shutdown.err = provider.Shutdown(context.Background())
+		close(shutdown.done)
+	}()
+
+	return waitForShutdown(ctx, shutdown)
+}
+
+func waitForShutdown(ctx context.Context, shutdown *shutdownState) error {
+	select {
+	case <-shutdown.done:
+		if shutdown.err != nil {
+			return fmt.Errorf("%w: %w", ErrTracerProviderShutdown, shutdown.err)
+		}
+
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("%w: %w", ErrTracerProviderShutdown, ctx.Err())
+	}
 }
 
 // IsInitialized returns true if the tracer has been initialized.

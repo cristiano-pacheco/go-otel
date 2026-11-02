@@ -118,6 +118,9 @@ type TracerConfig struct {
     TraceEnabled bool          // Enable/disable tracing
     BatchTimeout time.Duration // Batch send timeout (default: 5s)
     MaxBatchSize int           // Maximum batch size (default: 512)
+    MaxQueueSize int           // Maximum queued spans (default: 2048)
+    ExportTimeout time.Duration // Export operation timeout (default: 10s)
+    ShutdownTimeout time.Duration // Shutdown budget (default: 10s)
     Insecure     bool          // Use insecure connection (HTTP)
     SampleRate   float64       // Sample rate 0.0 to 1.0 (default: 0.01)
     SampleRateSet bool         // Set true to use an explicit zero sample rate
@@ -125,6 +128,24 @@ type TracerConfig struct {
     ExporterType ExporterType  // GRPC or HTTP, default GRPC
 }
 ```
+
+### Export and shutdown
+
+Initialization does not check whether the OTLP receiver is reachable. Export
+runs in the background and failures do not fail span operations. The queue
+holds at most `MaxQueueSize` spans and drops new spans when full. `MaxBatchSize`
+must not exceed the queue size. Negative limits are invalid; zero selects the
+default. `BatchTimeout` controls how often batches are sent, while
+`ExportTimeout` bounds each export and its retries.
+
+The provider owns its batch processor and exporter. `Shutdown` flushes ended
+spans and stops the provider, subject to `ShutdownTimeout` and the caller's
+context. If the caller's context expires first, cleanup continues in the
+background within the configured budget. A timeout can discard spans. State is
+cleared even on shutdown errors, so initialization may be retried. Repeated
+shutdown calls wait for the same result, subject to each caller's context. Stop
+application work before shutdown to avoid losing spans. Existing references to the old provider remain shut down; obtain new
+tracers after reinitialization.
 
 ### Sampling compatibility
 
@@ -182,7 +203,7 @@ Version that panics if initialization fails.
 Starts a new span with optional configuration. Returns updated context and span. This unified method replaces both `StartSpan` and `StartSpanWithOptions`.
 
 #### `Shutdown(ctx context.Context) error`
-Safely shuts down the tracer, finishing sending pending spans.
+Flushes pending spans within the configured shutdown budget and caller context. Repeated calls are safe.
 
 #### `IsInitialized() bool`
 Checks if the tracer has been initialized.
