@@ -1,49 +1,47 @@
 name: CI
 
 on:
-  push:
-    branches: [ "**" ]
   pull_request:
+    branches:
+      - main
 
 jobs:
-  static-checks:
-    name: Static Checks
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
+      - run: make test
 
-      - name: Cache dependencies
-        uses: actions/cache@v4
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          go-version-file: go.mod
+          cache: true
+      - run: make lint
 
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v9.2.0
+  vulnerabilities:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          version: v2.6
+          go-version-file: go.mod
+          cache: true
+      - run: make vuln-check
 
-      - name: Lint (golangci-lint)
-        run: make lint
-
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-
-      - name: Vulnerability Check (govulncheck)
-        run: make vuln-check
-
-      - name: Install nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@latest
-
-      - name: NilAway
-        run: make nilaway
+  nilaway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make nilaway

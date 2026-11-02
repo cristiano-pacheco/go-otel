@@ -20,6 +20,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid exporter type: %v", err)
 	}
+
 	config := trace.TracerConfig{
 		AppName:      "example-app",
 		AppVersion:   "1.0.0",
@@ -31,6 +32,7 @@ func main() {
 	}
 
 	trace.MustInitialize(config)
+
 	defer func() {
 		if shutdownErr := trace.Shutdown(context.Background()); shutdownErr != nil {
 			log.Printf("Error shutting down tracer: %v", shutdownErr)
