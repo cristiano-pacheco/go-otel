@@ -1,6 +1,8 @@
 # Check to see if we can use ash, in Alpine images, or default to BASH.
 SHELL_PATH = /bin/ash
 SHELL = $(if $(wildcard $(SHELL_PATH)),/bin/ash,/bin/bash)
+GO_BIN = $(shell go env GOBIN || true)
+GO_BIN := $(if $(GO_BIN),$(GO_BIN),$(shell go env GOPATH)/bin)
 
 .PHONY: all
 all: install-libs lint
@@ -10,9 +12,7 @@ all: install-libs lint
 
 .PHONY: install-libs
 install-libs:
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-	go install golang.org/x/vuln/cmd/govulncheck@latest
-	go install go.uber.org/nilaway/cmd/nilaway@latest
+	./scripts/install-tools.sh
 
 # ==============================================================================
 # Running tests within the local computer
@@ -22,12 +22,15 @@ static: lint vuln-check nilaway
 
 .PHONY: lint
 lint:
-	golangci-lint run ./... --allow-parallel-runners
+	./scripts/install-tools.sh golangci-lint
+	"$(GO_BIN)/golangci-lint" run ./... --allow-parallel-runners
 
 .PHONY: vuln-check
 vuln-check:
-	govulncheck -show verbose ./... 
+	./scripts/install-tools.sh govulncheck
+	"$(GO_BIN)/govulncheck" -show verbose ./...
 
 .PHONY: nilaway
 nilaway:
-	nilaway --include-pkgs="github.com/cristiano-pacheco/go-otel" ./...
+	./scripts/install-tools.sh nilaway
+	"$(GO_BIN)/nilaway" --include-pkgs="github.com/cristiano-pacheco/go-otel" ./...
