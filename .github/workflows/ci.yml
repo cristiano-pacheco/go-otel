@@ -1,41 +1,47 @@
 name: CI
 
 on:
-  push:
-    branches: [ "**" ]
   pull_request:
+    branches:
+      - main
 
 jobs:
-  static-checks:
-    name: Static Checks
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
+      - run: make test
 
-      - name: Cache dependencies
-        uses: actions/cache@v6
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          go-version-file: go.mod
+          cache: true
+      - run: make lint
 
-      - name: Download dependencies
-        run: go mod download
+  vulnerabilities:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make vuln-check
 
-      - name: Test
-        run: make test
-
-      - name: Lint (golangci-lint)
-        run: make lint
-
-      - name: Vulnerability Check (govulncheck)
-        run: make vuln-check
-
-      - name: NilAway
-        run: make nilaway
+  nilaway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make nilaway
