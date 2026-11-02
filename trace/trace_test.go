@@ -11,8 +11,101 @@ import (
 	"testing"
 
 	"github.com/cristiano-pacheco/go-otel/trace"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
+
+//nolint:paralleltest // The tracing API owns process-wide state.
+func TestSpanOwnership(t *testing.T) {
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+
+	t.Cleanup(func() {
+		if err := provider.Shutdown(context.Background()); err != nil {
+			t.Errorf("parent provider shutdown: %v", err)
+		}
+	})
+
+	for _, mode := range []string{"uninitialized", "disabled", "enabled"} {
+		t.Run(mode, func(t *testing.T) {
+			initializeForSpanTest(t, mode)
+			checkSpanOwnership(t, provider, mode)
+		})
+	}
+}
+
+func initializeForSpanTest(t *testing.T, mode string) {
+	t.Helper()
+
+	if mode == "uninitialized" {
+		return
+	}
+
+	config := trace.TracerConfig{AppName: "test"}
+
+	if mode == "enabled" {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(server.Close)
+
+		exporterType, err := trace.NewExporterType(trace.ExporterTypeHTTP)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		config.TraceEnabled = true
+		config.TraceURL = strings.TrimPrefix(server.URL, "http://")
+		config.Insecure = true
+		config.ExporterType = exporterType
+		config.SampleRate = 1
+	}
+
+	if err := trace.Initialize(config); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		if err := trace.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	})
+}
+
+//nolint:gocognit // Exercise both parent contexts across all tracing modes.
+func checkSpanOwnership(t *testing.T, provider *sdktrace.TracerProvider, mode string) {
+	t.Helper()
+
+	for _, withParent := range []bool{false, true} {
+		ctx := context.Background()
+
+		parent := oteltrace.SpanFromContext(ctx)
+		if withParent {
+			ctx, parent = provider.Tracer("parent").Start(ctx, "parent")
+		}
+
+		childCtx, child := trace.Span(ctx, "child")
+		if mode == "uninitialized" && childCtx != ctx {
+			t.Error("uninitialized span changed the context")
+		}
+
+		if mode == "enabled" && withParent &&
+			(child.SpanContext().TraceID() != parent.SpanContext().TraceID() || child.SpanContext().SpanID() == parent.SpanContext().SpanID()) {
+			t.Error("initialized span is not a child of the parent")
+		}
+
+		child.End()
+
+		if !withParent {
+			continue
+		}
+
+		if !parent.IsRecording() {
+			t.Error("ending child ended the parent")
+		}
+
+		parent.End()
+	}
+}
 
 func TestSampleRateValidation(t *testing.T) {
 	t.Parallel()

@@ -14,6 +14,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 //nolint:gochecknoglobals // The package exposes a process-wide tracing API.
@@ -25,7 +26,7 @@ var (
 	initialized          bool
 )
 
-// Initialize configures the global tracer. Must be called before using StartSpan.
+// Initialize configures the global tracer.
 // Returns an error if initialization fails.
 func Initialize(config TracerConfig) error {
 	globalMutex.Lock()
@@ -184,7 +185,12 @@ func newHTTPExporter(ctx context.Context, config TracerConfig) (sdktrace.SpanExp
 	return exporter, nil
 }
 
-// Span starts a new span with the given name and options.
+// Span starts a new span with the given name and options. Before initialization,
+// it returns the original context and a no-op span that can be ended safely.
+// When tracing is disabled, it creates a non-recording child span. In either
+// case, ending the returned span does not end an existing parent span.
+//
+//nolint:spancheck // The caller owns the returned span.
 func Span(
 	ctx context.Context,
 	name string,
@@ -194,8 +200,8 @@ func Span(
 	defer globalMutex.RUnlock()
 
 	if !initialized || globalTracer == nil {
-		// Return a no-op span if not initialized
-		return ctx, oteltrace.SpanFromContext(ctx)
+		_, span := noop.NewTracerProvider().Tracer("").Start(ctx, name, opts...)
+		return ctx, span
 	}
 
 	//nolint:spancheck // span is returned to caller who is responsible for ending it
