@@ -120,9 +120,26 @@ type TracerConfig struct {
     MaxBatchSize int           // Maximum batch size (default: 512)
     Insecure     bool          // Use insecure connection (HTTP)
     SampleRate   float64       // Sample rate 0.0 to 1.0 (default: 0.01)
+    SampleRateSet bool         // Set true to use an explicit zero sample rate
+    IDGenerator  sdktrace.IDGenerator // Optional custom trace and span ID generator
     ExporterType ExporterType  // GRPC or HTTP, default GRPC
 }
 ```
+
+### Sampling compatibility
+
+Root spans now use the configured sample rate. Previously, rates of 0.01 or
+higher sampled every trace. Existing deployments may therefore export fewer
+traces after upgrading. Child spans follow their local or remote parent's
+sampling decision, even when it differs from the configured root rate.
+
+An omitted `SampleRate` still defaults to 0.01. To disable sampling for root
+spans, set `SampleRate` to 0 and `SampleRateSet` to true. Existing nonzero rates
+do not require `SampleRateSet`. Configuration loaders must set the flag when
+zero is explicitly supplied. Values outside [0, 1], including NaN and
+infinities, are rejected. `IDGenerator` is optional and defaults to the
+OpenTelemetry SDK's random ID generator. A custom generator must be safe for
+concurrent use and produce valid trace and span IDs.
 
 ### Configuration Examples
 

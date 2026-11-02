@@ -28,6 +28,9 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: Test
+        run: make test
+
       - name: Lint (golangci-lint)
         run: make lint
 

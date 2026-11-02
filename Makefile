@@ -17,6 +17,10 @@ install-libs:
 # ==============================================================================
 # Running tests within the local computer
 
+.PHONY: test
+test:
+	go test -race ./...
+
 .PHONY: static
 static: lint vuln-check nilaway
 
